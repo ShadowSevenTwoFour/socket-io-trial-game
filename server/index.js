@@ -21,64 +21,82 @@ const io = socketIo(server, {
 });
 
 const players = {};  // Tracks all players (name, ready status, etc.)
+const rooms = {};
 
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
-  socket.on('joinLobby', (playerName) => {
+  socket.on('joinRoom', ({roomID, playerName}) => {
+    if (!rooms[roomID]) {
+        rooms[roomID] = [];
+      }
+  
 
-    players[socket.id] = { 
-      id: socket.id,
-      name: playerName,
-      x: Math.random() * 360,  
-      y: Math.random() * 360, 
-      color: `hsl(${Math.random() * 360}, 100%, 50%)`,  
-      ready: false 
-    };
+      const player = {
+        id: socket.id,
+        name: playerName,
+        x: Math.random() * 360,  
+        y: Math.random() * 360, 
+        color: `hsl(${Math.random() * 360}, 100%, 50%)`,  
+        ready: false 
+      };
+
+      rooms[roomID].push(player);
+        socket.join(roomID);
 
 
-    console.log('Updated players object:', players);
+    io.to(roomID).emit('updateLobby', rooms[roomID]);
+    io.to(roomID).emit('syncPlayers', rooms[roomID]);
 
-    io.emit('updateLobby', Object.values(players));
-    io.emit('syncPlayers', Object.values(players));
-
-    console.log('Broadcasting syncPlayers:', Object.values(players));
+    console.log(`Player ${playerName} joined room ${roomID}`);
   });
 
 
-  socket.on('toggleReady', (isReady) => {
-    io.emit('syncPlayers', Object.values(players));
-    if (players[socket.id]) {
-      players[socket.id].ready = isReady;
-      io.emit('updateLobby', Object.values(players)); 
+  socket.on('toggleReady', ({roomID, isReady}) => {
+    io.to(roomID).emit('syncPlayers', rooms[roomID]);
+    const player = rooms[roomID]?.find(p => p.id === socket.id);
+    if (player) {
+      player.ready = isReady;
+      io.to(roomID).emit('updateLobby', rooms[roomID]);
 
-      const allPlayersReady = Object.values(players).every(player => player.ready);
+      // Check if all players in the room are ready
+      const allPlayersReady = rooms[roomID].every(player => player.ready);
       if (allPlayersReady) {
-        io.emit('allPlayersReady'); 
+        io.to(roomID).emit('allPlayersReady'); 
       }
-      console.log('Updated players after readying:', Object.values(players));
     }
   });
 
-  socket.on('movePlayer', ({ x, y, id }) => {
-    if (players[id]) {
-      players[id].x = x;
-      players[id].y = y; 
+  socket.on('movePlayer', ({ roomID, x, y }) => {
+    const player = rooms[roomID]?.find(p => p.id === socket.id);
+    if (player) {
+      player.x = x;
+      player.y = y;
+      io.to(roomID).emit('syncPlayers', rooms[roomID]);  // Only sync within the room
     }
   });
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
-    delete players[socket.id];  
-    io.emit('updateLobby', Object.values(players));  
-    io.emit('syncPlayers', Object.values(players)); 
-    console.log('Updated players after disconnect:', Object.values(players));
+
+    // Remove the player from the rooms they belong to
+    for (const roomID in rooms) {
+      const room = rooms[roomID];
+      const playerIndex = room.findIndex(player => player.id === socket.id);
+      if (playerIndex !== -1) {
+        room.splice(playerIndex, 1);  // Remove player from room
+        io.to(roomID).emit('updateLobby', rooms[roomID]);  // Update remaining players in the room
+        io.to(roomID).emit('syncPlayers', rooms[roomID]);
+      }
+    }
   });
 });
 
 setInterval(() => {
-    io.emit('syncPlayers', Object.values(players));
-  }, 1000/60);  // Sync every 25ms (40 times per second)
+    for (const roomID in rooms) {
+        io.to(roomID).emit('syncPlayers', rooms[roomID]);
+      }
+  }, 1000/60);  // Sync every 16.66ms (60 times per second)
 
 
 server.listen(5000, () => {
